@@ -1,9 +1,7 @@
-# FDA_1mo_Stock_Prediction
-  # Used machine learning models to predict a 1 month future stock price of the user's choice
 Stock Price Predictor
 A machine learning application for predicting future stock prices based on WRDS (Wharton Research Data Services) data.
 
-Overview
+Overview:
 Stock Price Predictor is a comprehensive machine learning solution that leverages historical stock data from WRDS to predict future stock prices. The application uses advanced feature engineering techniques and various machine learning algorithms to identify patterns and make predictions.
 This project includes:
 
