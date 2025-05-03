@@ -1,13 +1,14 @@
 """
-Stock Price Predictor App (Using Pre-cleaned Data)
+Stock Price Predictor App (Using yfinance data)
 
-This Streamlit app loads pre-cleaned data and uses machine learning to predict stock prices at the end of 2025.
+This Streamlit app fetches stock data from Yahoo Finance and uses machine learning 
+to predict stock prices at the end of 2025.
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import os
+import yfinance as yf
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.express as px
@@ -23,7 +24,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # Constants
-CLEANED_DATA_PATH = "data/processed/cleaned_stock_data.csv"
+START_DATE = "2020-01-01"
+END_DATE = datetime.now().strftime('%Y-%m-%d')
 PREDICTION_HORIZON = 12  # Predict 12 months ahead (end of 2025)
 
 # Set page config
@@ -43,6 +45,16 @@ Models are trained on data from January 2020 to the present.
 # Sidebar
 st.sidebar.title("Configuration")
 
+# Stock selection
+st.sidebar.header("Stock Selection")
+stock_options = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "JPM", 
+    "JNJ", "V", "PG", "DIS", "NFLX", "INTC", "CSCO", "KO", "PEP", "MCD", 
+    "WMT", "HD", "BA", "CAT", "GE", "IBM", "XOM", "CVX"
+]
+
+selected_ticker = st.sidebar.selectbox("Select a stock", stock_options)
+
 # Model selection
 st.sidebar.header("Model Selection")
 model_option = st.sidebar.selectbox(
@@ -51,28 +63,47 @@ model_option = st.sidebar.selectbox(
     index=0
 )
 
-# Load cleaned data
+# Fetch data from yfinance
 @st.cache_data
-def load_cleaned_data():
-    """Load the pre-cleaned stock data."""
+def load_stock_data(ticker):
+    """Fetch stock data from Yahoo Finance."""
     try:
-        df = pd.read_csv(CLEANED_DATA_PATH)
+        # Get stock data
+        stock = yf.Ticker(ticker)
+        df = stock.history(start=START_DATE, end=END_DATE)
         
-        # Convert date column to datetime
-        if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date'])
+        # Reset index to make Date a column
+        df = df.reset_index()
         
-        logger.info(f"Loaded cleaned data: {df.shape[0]} rows, {df.shape[1]} columns")
+        # Rename columns to match expected format
+        df = df.rename(columns={
+            'Date': 'date',
+            'Open': 'OPEN',
+            'High': 'HIGH',
+            'Low': 'LOW',
+            'Close': 'PRC',  # Use Close as the price column
+            'Volume': 'VOL'
+        })
+        
+        # Add ticker column
+        df['TICKER'] = ticker
+        
+        # Calculate returns
+        df['RET'] = df['PRC'].pct_change()
+        
+        # Add a simple PERMNO (just use hash of ticker)
+        df['PERMNO'] = hash(ticker) % 100000
+        
+        logger.info(f"Loaded data for {ticker}: {df.shape[0]} rows")
         return df
     except Exception as e:
-        logger.error(f"Error loading cleaned data: {str(e)}")
+        logger.error(f"Error loading data for {ticker}: {str(e)}")
         return None
 
-# Load data
-with st.spinner("Loading stock data..."):
-    data = load_cleaned_data()
-
 # Main content
+with st.spinner(f"Loading data for {selected_ticker}..."):
+    data = load_stock_data(selected_ticker)
+
 if data is not None:
     # Feature engineering
     @st.cache_data
@@ -138,11 +169,6 @@ if data is not None:
                     
                     # Drop intermediate columns
                     result = result.drop(['up_move', 'down_move', f'avg_up_{window}', f'avg_down_{window}'], axis=1)
-            
-            # Market cap if SHROUT is available
-            if 'SHROUT' in result.columns:
-                result['market_cap'] = result['PRC'] * result['SHROUT']
-                result['log_market_cap'] = np.log1p(result['market_cap'])
         
         # Fill NaNs created during feature engineering
         result = result.fillna(method='ffill').fillna(method='bfill').fillna(0)
@@ -153,273 +179,255 @@ if data is not None:
     with st.spinner("Creating prediction features..."):
         featured_data = engineer_features(data)
     
-    # Get unique tickers
-    if 'TICKER' in featured_data.columns:
-        tickers = sorted(featured_data['TICKER'].unique())
+    # Sort by date
+    ticker_data = featured_data.sort_values('date')
+    
+    # Create train/test split based on dates
+    @st.cache_resource
+    def train_predict_model(ticker_df, model_name):
+        """Train model and make prediction for selected ticker."""
+        # Prepare data for modeling
+        # Create target variable: price 12 months ahead
+        df = ticker_df.copy()
+        df['future_price'] = df['PRC'].shift(-PREDICTION_HORIZON)
         
-        # Display stock selection
-        st.header("Stock Selection")
-        selected_ticker = st.selectbox("Select a stock to predict", tickers)
+        # Drop rows where future price is NA
+        modeling_data = df.dropna(subset=['future_price'])
         
-        if selected_ticker:
-            # Filter data for selected ticker
-            ticker_data = featured_data[featured_data['TICKER'] == selected_ticker].copy()
+        # Keep latest data point for prediction
+        prediction_data = df.iloc[-1:].copy()
+        
+        # Prepare features
+        exclude_cols = ['date', 'TICKER', 'PERMNO', 'future_price', 'OPEN', 'HIGH', 'LOW']
+        feature_cols = [col for col in modeling_data.columns 
+                      if col not in exclude_cols]
+        
+        X = modeling_data[feature_cols]
+        y = modeling_data['future_price']
+        
+        # Scale features
+        scaler = RobustScaler()
+        X_scaled = scaler.fit_transform(X)
+        X_scaled_df = pd.DataFrame(X_scaled, columns=X.columns)
+        
+        # Train model
+        if model_name == "Random Forest":
+            model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+            model.fit(X_scaled_df, y)
             
-            # Sort by date
-            ticker_data = ticker_data.sort_values('date')
+            # Make prediction
+            X_pred = prediction_data[feature_cols]
+            X_pred_scaled = scaler.transform(X_pred)
+            prediction = model.predict(X_pred_scaled)[0]
             
-            # Create train/test split based on dates
-            @st.cache_resource
-            def train_predict_model(ticker_df, model_name):
-                """Train model and make prediction for selected ticker."""
-                # Prepare data for modeling
-                # Create target variable: price 12 months ahead
-                df = ticker_df.copy()
-                df['future_price'] = df['PRC'].shift(-PREDICTION_HORIZON)
-                
-                # Drop rows where future price is NA
-                modeling_data = df.dropna(subset=['future_price'])
-                
-                # Keep latest data point for prediction
-                prediction_data = df.iloc[-1:].copy()
-                
-                # Prepare features
-                exclude_cols = ['date', 'TICKER', 'PERMNO', 'future_price', 'CUSIP', 'NCUSIP', 
-                              'COMNAM', 'TSYMBOL', 'NAMEENDT', 'SHRCLS', 'NEXTDT', 'DCLRDT', 
-                              'DLPDT', 'PAYDT', 'RCRDDT', 'SHRENDDT', 'ALTPRCDT']
-                feature_cols = [col for col in modeling_data.columns 
-                               if col not in exclude_cols]
-                
-                X = modeling_data[feature_cols]
-                y = modeling_data['future_price']
-                
-                # Scale features
-                scaler = RobustScaler()
-                X_scaled = scaler.fit_transform(X)
-                X_scaled_df = pd.DataFrame(X_scaled, columns=X.columns)
-                
-                # Train model
-                if model_name == "Random Forest":
-                    model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
-                    model.fit(X_scaled_df, y)
-                    
-                    # Make prediction
-                    X_pred = prediction_data[feature_cols]
-                    X_pred_scaled = scaler.transform(X_pred)
-                    prediction = model.predict(X_pred_scaled)[0]
-                    
-                    # Feature importance
-                    importances = model.feature_importances_
-                    feature_importance = pd.DataFrame({
-                        'feature': feature_cols,
-                        'importance': importances
-                    }).sort_values('importance', ascending=False)
-                    
-                elif model_name == "Linear Regression":
-                    model = LinearRegression()
-                    model.fit(X_scaled_df, y)
-                    
-                    # Make prediction
-                    X_pred = prediction_data[feature_cols]
-                    X_pred_scaled = scaler.transform(X_pred)
-                    prediction = model.predict(X_pred_scaled)[0]
-                    
-                    # Feature importance
-                    importances = np.abs(model.coef_)
-                    feature_importance = pd.DataFrame({
-                        'feature': feature_cols,
-                        'importance': importances
-                    }).sort_values('importance', ascending=False)
-                    
-                else:  # Ensemble
-                    rf_model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
-                    linear_model = LinearRegression()
-                    
-                    rf_model.fit(X_scaled_df, y)
-                    linear_model.fit(X_scaled_df, y)
-                    
-                    # Make prediction
-                    X_pred = prediction_data[feature_cols]
-                    X_pred_scaled = scaler.transform(X_pred)
-                    
-                    rf_pred = rf_model.predict(X_pred_scaled)[0]
-                    linear_pred = linear_model.predict(X_pred_scaled)[0]
-                    
-                    # Ensemble prediction (average)
-                    prediction = (rf_pred + linear_pred) / 2
-                    
-                    # Feature importance from Random Forest
-                    importances = rf_model.feature_importances_
-                    feature_importance = pd.DataFrame({
-                        'feature': feature_cols,
-                        'importance': importances
-                    }).sort_values('importance', ascending=False)
-                
-                # Calculate metrics on training data
-                train_pred = model.predict(X_scaled_df) if model_name != "Ensemble" else \
-                            (rf_model.predict(X_scaled_df) + linear_model.predict(X_scaled_df)) / 2
-                
-                rmse = np.sqrt(mean_squared_error(y, train_pred))
-                mae = mean_absolute_error(y, train_pred)
-                r2 = r2_score(y, train_pred)
-                
-                # Calculate MAPE
-                y_nonzero = np.where(y == 0, 1e-10, y)
-                mape = np.mean(np.abs((y - train_pred) / y_nonzero)) * 100
-                
-                return {
-                    'current_price': prediction_data['PRC'].values[0],
-                    'predicted_price': prediction,
-                    'feature_importance': feature_importance,
-                    'metrics': {
-                        'rmse': rmse,
-                        'mae': mae,
-                        'r2': r2,
-                        'mape': mape
-                    }
-                }
+            # Feature importance
+            importances = model.feature_importances_
+            feature_importance = pd.DataFrame({
+                'feature': feature_cols,
+                'importance': importances
+            }).sort_values('importance', ascending=False)
             
-            # Run prediction
-            with st.spinner(f"Predicting future price for {selected_ticker}..."):
-                result = train_predict_model(ticker_data, model_option)
+        elif model_name == "Linear Regression":
+            model = LinearRegression()
+            model.fit(X_scaled_df, y)
             
-            # Display results
-            st.header("Price Prediction for End of 2025")
+            # Make prediction
+            X_pred = prediction_data[feature_cols]
+            X_pred_scaled = scaler.transform(X_pred)
+            prediction = model.predict(X_pred_scaled)[0]
             
-            current_price = result['current_price']
-            predicted_price = result['predicted_price']
-            change_pct = (predicted_price / current_price - 1) * 100
+            # Feature importance
+            importances = np.abs(model.coef_)
+            feature_importance = pd.DataFrame({
+                'feature': feature_cols,
+                'importance': importances
+            }).sort_values('importance', ascending=False)
             
-            col1, col2, col3 = st.columns(3)
+        else:  # Ensemble
+            rf_model = RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)
+            linear_model = LinearRegression()
             
-            with col1:
-                st.metric("Current Price", f"${current_price:.2f}")
+            rf_model.fit(X_scaled_df, y)
+            linear_model.fit(X_scaled_df, y)
             
-            with col2:
-                st.metric("Predicted Price (End of 2025)", f"${predicted_price:.2f}")
+            # Make prediction
+            X_pred = prediction_data[feature_cols]
+            X_pred_scaled = scaler.transform(X_pred)
             
-            with col3:
-                st.metric("Predicted Change", f"{change_pct:.2f}%", 
-                         delta=f"{change_pct:.2f}%", 
-                         delta_color="normal")
+            rf_pred = rf_model.predict(X_pred_scaled)[0]
+            linear_pred = linear_model.predict(X_pred_scaled)[0]
             
-            # Plot price history and prediction
-            st.header("Price History and Prediction")
+            # Ensemble prediction (average)
+            prediction = (rf_pred + linear_pred) / 2
             
-            # Prepare data for plotting
-            dates = ticker_data['date'].tolist()
-            prices = ticker_data['PRC'].tolist()
-            
-            # Add prediction point
-            last_date = dates[-1]
-            # Add approximately one year
-            pred_date = last_date + pd.DateOffset(months=12)
-            
-            # Create interactive plot
-            fig = go.Figure()
-            
-            # Add historical prices
-            fig.add_trace(go.Scatter(
-                x=dates,
-                y=prices,
-                mode='lines+markers',
-                name='Historical Price',
-                line=dict(color='blue')
-            ))
-            
-            # Add prediction line
-            fig.add_trace(go.Scatter(
-                x=[last_date, pred_date],
-                y=[current_price, predicted_price],
-                mode='lines',
-                line=dict(color='red', dash='dash'),
-                name='Prediction'
-            ))
-            
-            # Add prediction point
-            fig.add_trace(go.Scatter(
-                x=[pred_date],
-                y=[predicted_price],
-                mode='markers',
-                marker=dict(size=12, color='red', symbol='star'),
-                name='End of 2025 Prediction'
-            ))
-            
-            fig.update_layout(
-                title=f"{selected_ticker} Stock Price Prediction",
-                xaxis_title="Date",
-                yaxis_title="Price ($)",
-                legend_title="Legend",
-                height=500
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Model information
-            st.header("Model Information")
-            
-            if model_option == "Ensemble":
-                st.write("Using an ensemble of Random Forest and Linear Regression models")
-            else:
-                st.write(f"Using a {model_option} model")
-                
-            # Show feature importance
-            st.subheader("Feature Importance")
-            
-            feature_imp = result['feature_importance']
-            if feature_imp is not None:
-                # Show top 15 features
-                top_features = feature_imp.head(15)
-                
-                fig = px.bar(
-                    top_features, 
-                    x='importance', 
-                    y='feature',
-                    orientation='h',
-                    title='Top 15 Features by Importance',
-                    labels={'importance': 'Importance', 'feature': 'Feature'},
-                    height=500
-                )
-                
-                fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Performance metrics
-            st.header("Model Performance")
-            
-            metrics = result['metrics']
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.metric("RMSE", f"${metrics['rmse']:.2f}")
-            
-            with col2:
-                st.metric("MAE", f"${metrics['mae']:.2f}")
-            
-            with col3:
-                st.metric("R²", f"{metrics['r2']:.2f}")
-            
-            with col4:
-                st.metric("MAPE", f"{metrics['mape']:.2f}%")
-            
-            # Interpretation and disclaimer
-            st.header("Interpretation")
-            
-            st.markdown(f"""
-            Based on the {model_option} model's analysis of historical data, {selected_ticker}'s price is predicted to be 
-            **${predicted_price:.2f}** at the end of 2025, representing a **{change_pct:.2f}%** change from the current price.
-            
-            **Disclaimer:** This prediction is based on historical patterns and technical indicators. 
-            Stock markets are influenced by many factors including economic events, company performance, and market sentiment 
-            that may not be captured in this model. This prediction should not be used as the sole basis for investment decisions.
-            """)
-        else:
-            st.info("Please select a stock to predict")
+            # Feature importance from Random Forest
+            importances = rf_model.feature_importances_
+            feature_importance = pd.DataFrame({
+                'feature': feature_cols,
+                'importance': importances
+            }).sort_values('importance', ascending=False)
+        
+        # Calculate metrics on training data
+        train_pred = model.predict(X_scaled_df) if model_name != "Ensemble" else \
+                    (rf_model.predict(X_scaled_df) + linear_model.predict(X_scaled_df)) / 2
+        
+        rmse = np.sqrt(mean_squared_error(y, train_pred))
+        mae = mean_absolute_error(y, train_pred)
+        r2 = r2_score(y, train_pred)
+        
+        # Calculate MAPE
+        y_nonzero = np.where(y == 0, 1e-10, y)
+        mape = np.mean(np.abs((y - train_pred) / y_nonzero)) * 100
+        
+        return {
+            'current_price': prediction_data['PRC'].values[0],
+            'predicted_price': prediction,
+            'feature_importance': feature_importance,
+            'metrics': {
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
+                'mape': mape
+            }
+        }
+    
+    # Run prediction
+    with st.spinner(f"Predicting future price for {selected_ticker}..."):
+        result = train_predict_model(ticker_data, model_option)
+    
+    # Display results
+    st.header("Price Prediction for End of 2025")
+    
+    current_price = result['current_price']
+    predicted_price = result['predicted_price']
+    change_pct = (predicted_price / current_price - 1) * 100
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Current Price", f"${current_price:.2f}")
+    
+    with col2:
+        st.metric("Predicted Price (End of 2025)", f"${predicted_price:.2f}")
+    
+    with col3:
+        st.metric("Predicted Change", f"{change_pct:.2f}%", 
+                delta=f"{change_pct:.2f}%", 
+                delta_color="normal")
+    
+    # Plot price history and prediction
+    st.header("Price History and Prediction")
+    
+    # Prepare data for plotting
+    dates = ticker_data['date'].tolist()
+    prices = ticker_data['PRC'].tolist()
+    
+    # Add prediction point
+    last_date = dates[-1]
+    # Add approximately one year
+    pred_date = last_date + pd.DateOffset(months=12)
+    
+    # Create interactive plot
+    fig = go.Figure()
+    
+    # Add historical prices
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=prices,
+        mode='lines+markers',
+        name='Historical Price',
+        line=dict(color='blue')
+    ))
+    
+    # Add prediction line
+    fig.add_trace(go.Scatter(
+        x=[last_date, pred_date],
+        y=[current_price, predicted_price],
+        mode='lines',
+        line=dict(color='red', dash='dash'),
+        name='Prediction'
+    ))
+    
+    # Add prediction point
+    fig.add_trace(go.Scatter(
+        x=[pred_date],
+        y=[predicted_price],
+        mode='markers',
+        marker=dict(size=12, color='red', symbol='star'),
+        name='End of 2025 Prediction'
+    ))
+    
+    fig.update_layout(
+        title=f"{selected_ticker} Stock Price Prediction",
+        xaxis_title="Date",
+        yaxis_title="Price ($)",
+        legend_title="Legend",
+        height=500
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Model information
+    st.header("Model Information")
+    
+    if model_option == "Ensemble":
+        st.write("Using an ensemble of Random Forest and Linear Regression models")
     else:
-        st.error("Ticker column not found in data")
+        st.write(f"Using a {model_option} model")
+        
+    # Show feature importance
+    st.subheader("Feature Importance")
+    
+    feature_imp = result['feature_importance']
+    if feature_imp is not None:
+        # Show top 15 features
+        top_features = feature_imp.head(15)
+        
+        fig = px.bar(
+            top_features, 
+            x='importance', 
+            y='feature',
+            orientation='h',
+            title='Top 15 Features by Importance',
+            labels={'importance': 'Importance', 'feature': 'Feature'},
+            height=500
+        )
+        
+        fig.update_layout(yaxis={'categoryorder': 'total ascending'})
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Performance metrics
+    st.header("Model Performance")
+    
+    metrics = result['metrics']
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("RMSE", f"${metrics['rmse']:.2f}")
+    
+    with col2:
+        st.metric("MAE", f"${metrics['mae']:.2f}")
+    
+    with col3:
+        st.metric("R²", f"{metrics['r2']:.2f}")
+    
+    with col4:
+        st.metric("MAPE", f"{metrics['mape']:.2f}%")
+    
+    # Interpretation and disclaimer
+    st.header("Interpretation")
+    
+    st.markdown(f"""
+    Based on the {model_option} model's analysis of historical data, {selected_ticker}'s price is predicted to be 
+    **${predicted_price:.2f}** at the end of 2025, representing a **{change_pct:.2f}%** change from the current price.
+    
+    **Disclaimer:** This prediction is based on historical patterns and technical indicators. 
+    Stock markets are influenced by many factors including economic events, company performance, and market sentiment 
+    that may not be captured in this model. This prediction should not be used as the sole basis for investment decisions.
+    """)
 else:
-    st.error("Failed to load stock data. Please make sure the cleaned data file exists at 'data/processed/cleaned_stock_data.csv'")
+    st.error(f"Failed to load data for {selected_ticker}. Please try another stock.")
 
 # Footer
 st.markdown("---")
