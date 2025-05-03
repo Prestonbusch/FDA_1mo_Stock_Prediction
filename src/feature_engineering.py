@@ -433,4 +433,36 @@ class StockFeatureEngineer:
         with_market = self.create_market_features(with_tech)
         with_fundamental = self.create_fundamental_features(with_market)
         
-        # Prepare features
+        # Prepare features and targets
+        X, y = processor.prepare_features_targets(
+            with_fundamental, 
+            target_col=target_col,
+            prediction_window=prediction_window
+        )
+        
+        # Split data
+        X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(
+            X, y, train_ratio, val_ratio
+        )
+        
+        # Scale features
+        X_train_scaled, X_val_scaled, X_test_scaled = self.scale_features(X_train, X_val, X_test)
+        
+        # Select features
+        X_train_selected, X_val_selected, X_test_selected = self.select_features(
+            X_train_scaled, y_train, X_val_scaled, X_test_scaled, k=top_k_features
+        )
+        
+        logger.info("Feature engineering pipeline complete")
+        
+        return {
+            'X_train': X_train_selected,
+            'X_val': X_val_selected,
+            'X_test': X_test_selected,
+            'y_train': y_train,
+            'y_val': y_val,
+            'y_test': y_test,
+            'feature_names': self.feature_names,
+            'scaler': self.scaler,
+            'feature_selector': self.feature_selector
+        }
