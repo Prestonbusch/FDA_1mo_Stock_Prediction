@@ -1,15 +1,13 @@
 """
-FDA 1-Month Stock Price Prediction App
+1-Month Stock Price Predictor
 
-A streamlined app that combines data processing, feature engineering, 
-model training, and the Streamlit interface in a single file.
+This Streamlit app uses machine learning to predict stock prices one year ahead (end of 2025).
+It works with pre-loaded data, allowing users to select stocks and prediction models.
 """
 
+import streamlit as st
 import pandas as pd
 import numpy as np
-import streamlit as st
-import matplotlib.pyplot as plt
-import seaborn as sns
 import os
 import py7zr
 import joblib
@@ -18,21 +16,11 @@ from datetime import datetime, timedelta
 import logging
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.feature_selection import SelectKBest, f_regression
-from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, AdaBoostRegressor
-from sklearn.svm import SVR
-from sklearn.neighbors import KNeighborsRegressor
-try:
-    from xgboost import XGBRegressor
-except ImportError:
-    XGBRegressor = None
-try:
-    from lightgbm import LGBMRegressor
-except ImportError:
-    LGBMRegressor = None
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -40,19 +28,23 @@ import plotly.express as px
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Constants
+DATA_PATH = "data/raw/FDA_StockData.7z"
+PREDICTION_HORIZON = 12  # Predict 12 months ahead (end of 2025)
+
 #####################################
 # DATA PROCESSING MODULE
 #####################################
 
 class StockDataProcessor:
-    """Class for processing WRDS stock data for machine learning."""
+    """Class for processing stock data for machine learning."""
     
     def __init__(self, data_path: str = None):
         """
         Initialize the stock data processor.
         
         Args:
-            data_path: Path to the raw WRDS data file (can be .csv or .7z)
+            data_path: Path to the raw data file (can be .csv or .7z)
         """
         self.data_path = data_path
         self.data = None
@@ -113,7 +105,6 @@ class StockDataProcessor:
         if file_path.endswith('.7z'):
             file_path = self.extract_7z()
         
-        # Try to infer date format and data types
         try:
             # Load the CSV file
             df = pd.read_csv(file_path)
@@ -195,7 +186,7 @@ class StockDataProcessor:
     def prepare_features_targets(self, 
                               df: Optional[pd.DataFrame] = None,
                               target_col: str = 'PRC',
-                              prediction_window: int = 1) -> Tuple[pd.DataFrame, pd.Series]:
+                              prediction_window: int = PREDICTION_HORIZON) -> Tuple[pd.DataFrame, pd.Series]:
         """
         Prepare feature and target variables for machine learning.
         
@@ -290,44 +281,6 @@ class StockDataProcessor:
         logger.info(f"Data split: train={X_train.shape[0]}, val={X_val.shape[0]}, test={X_test.shape[0]} samples")
         
         return X_train, X_val, X_test, y_train, y_val, y_test
-    
-    def save_processed_data(self, output_dir: str = 'data/processed'):
-        """
-        Save processed data to disk.
-        
-        Args:
-            output_dir: Directory to save processed data
-        """
-        if self.processed_data is None:
-            raise ValueError("No processed data available. Call clean_data first.")
-        
-        # Create directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Save processed data
-        output_path = os.path.join(output_dir, 'processed_stock_data.csv')
-        self.processed_data.to_csv(output_path, index=False)
-        
-        logger.info(f"Processed data saved to {output_path}")
-        
-    def process_pipeline(self, data_path: str = None, output_dir: str = 'data/processed'):
-        """
-        Run the full data processing pipeline.
-        
-        Args:
-            data_path: Path to raw data file
-            output_dir: Directory to save processed data
-        """
-        if data_path:
-            self.data_path = data_path
-            
-        self.load_data()
-        self.clean_data()
-        self.save_processed_data(output_dir)
-        
-        logger.info("Data processing pipeline completed successfully")
-        
-        return self.processed_data
 
 #####################################
 # FEATURE ENGINEERING MODULE
@@ -678,108 +631,6 @@ class StockFeatureEngineer:
         logger.info(f"Selected {len(self.feature_names)} features: {', '.join(self.feature_names[:10])}...")
         
         return tuple(result)
-    
-    def get_feature_importance(self, model, X: pd.DataFrame) -> pd.DataFrame:
-        """
-        Extract feature importance from trained model.
-        
-        Args:
-            model: Trained model with feature_importances_ attribute
-            X: Feature DataFrame
-            
-        Returns:
-            DataFrame with feature importance scores
-        """
-        # Check if model has feature_importances_ attribute
-        if hasattr(model, 'feature_importances_'):
-            importance = model.feature_importances_
-        elif hasattr(model, 'coef_'):
-            importance = np.abs(model.coef_)
-        else:
-            logger.warning("Model doesn't have feature_importances_ or coef_ attribute")
-            return None
-        
-        # Create DataFrame with feature names and importance scores
-        if len(importance.shape) > 1 and importance.shape[0] > 1:
-            # For multi-output models, take the mean importance
-            importance = np.mean(importance, axis=0)
-        
-        feature_names = X.columns
-        importance_df = pd.DataFrame({
-            'feature': feature_names,
-            'importance': importance
-        })
-        
-        # Sort by importance
-        importance_df = importance_df.sort_values('importance', ascending=False)
-        
-        return importance_df
-    
-    def feature_pipeline(self, 
-                        df: pd.DataFrame, 
-                        target_col: str = 'PRC',
-                        prediction_window: int = 1,
-                        train_ratio: float = 0.7,
-                        val_ratio: float = 0.15,
-                        top_k_features: int = 50) -> Dict:
-        """
-        Complete feature engineering pipeline.
-        
-        Args:
-            df: Raw DataFrame with stock data
-            target_col: Column to predict
-            prediction_window: Months ahead to predict
-            train_ratio: Proportion for training
-            val_ratio: Proportion for validation
-            top_k_features: Number of features to select
-            
-        Returns:
-            Dictionary with processed datasets and metadata
-        """
-        logger.info("Starting feature engineering pipeline")
-        
-        # Data processing
-        processor = StockDataProcessor()
-        processed_data = processor.clean_data(df)
-        
-        # Create features
-        with_tech = self.create_technical_indicators(processed_data)
-        with_market = self.create_market_features(with_tech)
-        with_fundamental = self.create_fundamental_features(with_market)
-        
-        # Prepare features and targets
-        X, y = processor.prepare_features_targets(
-            with_fundamental, 
-            target_col=target_col,
-            prediction_window=prediction_window
-        )
-        
-        # Split data
-        X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(
-            X, y, train_ratio, val_ratio
-        )
-        
-        # Scale features
-        X_train_scaled, X_val_scaled, X_test_scaled = self.scale_features(X_train, X_val, X_test)
-        
-        # Select features
-        X_train_selected, X_val_selected, X_test_selected = self.select_features(
-            X_train_scaled, y_train, X_val_scaled, X_test_scaled, k=top_k_features
-        )
-        
-        logger.info("Feature engineering pipeline complete")
-        
-        return {
-            'X_train': X_train_selected,
-            'X_val': X_val_selected,
-            'X_test': X_test_selected,
-            'y_train': y_train,
-            'y_val': y_val,
-            'y_test': y_test,
-            'feature_names': self.feature_names,
-            'scaler': self.scaler,
-            'feature_selector': self.feature_selector
-        }
 
 #####################################
 # MODEL TRAINING MODULE
@@ -788,14 +639,13 @@ class StockFeatureEngineer:
 class StockPriceModel:
     """Class for training and evaluating stock price prediction models."""
     
-    def __init__(self, model_type: str = 'xgboost', model_params: Optional[Dict] = None):
+    def __init__(self, model_type: str = 'random_forest', model_params: Optional[Dict] = None):
         """
         Initialize the stock price model.
         
         Args:
             model_type: Type of model to use ('linear', 'ridge', 'lasso', 'elastic_net', 
-                       'random_forest', 'gradient_boosting', 'ada_boost', 'svr', 
-                       'knn', 'xgboost', 'lightgbm')
+                       'random_forest', 'gradient_boosting')
             model_params: Parameters for the model
         """
         self.model_type = model_type.lower()
@@ -828,20 +678,6 @@ class StockPriceModel:
             model = RandomForestRegressor(n_jobs=-1, **self.model_params)
         elif self.model_type == 'gradient_boosting':
             model = GradientBoostingRegressor(**self.model_params)
-        elif self.model_type == 'ada_boost':
-            model = AdaBoostRegressor(**self.model_params)
-        elif self.model_type == 'svr':
-            model = SVR(**self.model_params)
-        elif self.model_type == 'knn':
-            model = KNeighborsRegressor(n_jobs=-1, **self.model_params)
-        elif self.model_type == 'xgboost':
-            if XGBRegressor is None:
-                raise ImportError("XGBoost is not installed. Please install it with 'pip install xgboost'.")
-            model = XGBRegressor(n_jobs=-1, **self.model_params)
-        elif self.model_type == 'lightgbm':
-            if LGBMRegressor is None:
-                raise ImportError("LightGBM is not installed. Please install it with 'pip install lightgbm'.")
-            model = LGBMRegressor(n_jobs=-1, **self.model_params)
         else:
             logger.error(f"Unknown model type: {self.model_type}")
             raise ValueError(f"Unknown model type: {self.model_type}")
@@ -920,101 +756,16 @@ class StockPriceModel:
         y_true_nonzero = np.where(y_true == 0, 1e-10, y_true)
         mape = np.mean(np.abs((y_true - y_pred) / y_true_nonzero)) * 100
         
-        # Calculate direction accuracy (how often the model predicts the correct price direction)
-        # For the last data point of each stock, compare with its previous price
-        direction_accuracy = np.mean((y_true > 0) == (y_pred > 0)) * 100
-        
         metrics = {
             'rmse': rmse,
             'mae': mae,
             'r2': r2,
-            'mape': mape,
-            'direction_accuracy': direction_accuracy
+            'mape': mape
         }
         
         logger.info(f"Evaluation metrics: {metrics}")
         
         return metrics
-        
-    def save_model(self, directory: str = 'models', filename: Optional[str] = None) -> str:
-        """
-        Save the trained model to disk.
-        
-        Args:
-            directory: Directory to save the model
-            filename: Filename for the model (optional)
-            
-        Returns:
-            Path to the saved model
-        """
-        if self.model is None:
-            raise ValueError("Model has not been trained. Call train() first.")
-            
-        # Create directory if it doesn't exist
-        os.makedirs(directory, exist_ok=True)
-        
-        # Generate filename if not provided
-        if filename is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{self.model_type}_model_{timestamp}.joblib"
-            
-        # Save the model
-        model_path = os.path.join(directory, filename)
-        joblib.dump(self.model, model_path)
-        
-        # Save the feature names
-        feature_path = os.path.join(directory, filename.replace(".joblib", "_features.joblib"))
-        joblib.dump(self.feature_names, feature_path)
-        
-        logger.info(f"Model saved to {model_path}")
-        
-        return model_path
-        
-    @classmethod
-    def load_model(cls, model_path: str) -> 'StockPriceModel':
-        """
-        Load a trained model from disk.
-        
-        Args:
-            model_path: Path to the saved model
-            
-        Returns:
-            StockPriceModel instance with loaded model
-        """
-        logger.info(f"Loading model from {model_path}")
-        
-        # Load the model
-        model = joblib.load(model_path)
-        
-        # Determine model type
-        model_type = type(model).__name__.lower()
-        if 'xgb' in model_type:
-            model_type = 'xgboost'
-        elif 'lgbm' in model_type:
-            model_type = 'lightgbm'
-        elif 'randomforest' in model_type:
-            model_type = 'random_forest'
-        elif 'gradientboosting' in model_type:
-            model_type = 'gradient_boosting'
-        elif 'adaboost' in model_type:
-            model_type = 'ada_boost'
-        elif 'linear' in model_type:
-            model_type = 'linear'
-        
-        # Create instance
-        instance = cls(model_type=model_type)
-        instance.model = model
-        
-        # Try to load feature names
-        try:
-            feature_path = model_path.replace(".joblib", "_features.joblib")
-            if os.path.exists(feature_path):
-                instance.feature_names = joblib.load(feature_path)
-                logger.info(f"Loaded {len(instance.feature_names)} feature names")
-        except Exception as e:
-            logger.warning(f"Could not load feature names: {str(e)}")
-        
-        return instance
         
     def plot_feature_importance(self, top_n: int = 20) -> plt.Figure:
         """
@@ -1120,15 +871,8 @@ class StockPriceModelEnsemble:
         elif method == 'median':
             ensemble_pred = np.median(predictions, axis=0)
         elif method == 'weighted':
-            # Use inverse RMSE as weights
-            # Assumes each model has been evaluated on a validation set
-            weights = []
-            for model in self.models:
-                # Default weight of 1 if no RMSE available
-                weights.append(1.0)
-            
-            # Normalize weights
-            weights = np.array(weights) / sum(weights)
+            # Use equal weights for now
+            weights = np.ones(len(self.models)) / len(self.models)
             
             # Apply weights
             ensemble_pred = np.zeros(predictions[0].shape)
@@ -1164,95 +908,16 @@ class StockPriceModelEnsemble:
         y_true_nonzero = np.where(y_true == 0, 1e-10, y_true)
         mape = np.mean(np.abs((y_true - y_pred) / y_true_nonzero)) * 100
         
-        # Calculate direction accuracy
-        direction_accuracy = np.mean((y_true > 0) == (y_pred > 0)) * 100
-        
         metrics = {
             'rmse': rmse,
             'mae': mae,
             'r2': r2,
-            'mape': mape,
-            'direction_accuracy': direction_accuracy
+            'mape': mape
         }
         
         logger.info(f"Ensemble evaluation metrics ({method} method): {metrics}")
         
         return metrics
-        
-    def save_models(self, directory: str = 'models/ensemble') -> List[str]:
-        """
-        Save all models in the ensemble.
-        
-        Args:
-            directory: Directory to save models
-            
-        Returns:
-            List of paths to saved models
-        """
-        # Create directory if it doesn't exist
-        os.makedirs(directory, exist_ok=True)
-        
-        # Save each model
-        paths = []
-        for i, model in enumerate(self.models):
-            filename = f"ensemble_model_{i}_{model.model_type}.joblib"
-            path = model.save_model(directory, filename)
-            paths.append(path)
-            
-        # Save ensemble metadata
-        metadata = {
-            'model_types': [model.model_type for model in self.models],
-            'model_paths': paths
-        }
-        
-        metadata_path = os.path.join(directory, 'ensemble_metadata.joblib')
-        joblib.dump(metadata, metadata_path)
-        
-        logger.info(f"Ensemble saved to {directory}")
-        
-        return paths
-        
-    @classmethod
-    def load_ensemble(cls, directory: str = 'models/ensemble') -> 'StockPriceModelEnsemble':
-        """
-        Load ensemble from disk.
-        
-        Args:
-            directory: Directory containing saved models
-            
-        Returns:
-            StockPriceModelEnsemble instance
-        """
-        logger.info(f"Loading ensemble from {directory}")
-        
-        # Load metadata
-        metadata_path = os.path.join(directory, 'ensemble_metadata.joblib')
-        
-        try:
-            metadata = joblib.load(metadata_path)
-            
-            # Load each model
-            models = []
-            for path in metadata['model_paths']:
-                model = StockPriceModel.load_model(path)
-                models.append(model)
-                
-            # Create ensemble
-            ensemble = cls(models)
-            
-            logger.info(f"Loaded ensemble with {len(models)} models")
-            
-            return ensemble
-        except Exception as e:
-            logger.error(f"Failed to load ensemble: {str(e)}")
-            
-            # Attempt to create a default ensemble with available models
-            logger.info("Creating default ensemble with random forest and linear regression")
-            
-            rf_model = StockPriceModel(model_type='random_forest')
-            linear_model = StockPriceModel(model_type='linear')
-            
-            return cls([rf_model, linear_model])
 
 #####################################
 # STREAMLIT APP
@@ -1260,27 +925,20 @@ class StockPriceModelEnsemble:
 
 # Set page config
 st.set_page_config(
-    page_title="1-Month Stock Price Predictor",
+    page_title="1-Year Stock Price Predictor",
     page_icon="📈",
     layout="wide"
 )
 
 # Title and description
-st.title("1-Month Stock Price Predictor")
+st.title("Stock Price Predictor for End of 2025")
 st.markdown("""
-This application uses machine learning to predict stock prices one month in the future.
-Upload your stock data, select stocks to analyze, and get predictions.
+This application uses machine learning to predict stock prices at the end of 2025.
+Models are trained on data from January 2020 to the present.
 """)
 
 # Sidebar
 st.sidebar.title("Configuration")
-
-# File upload
-st.sidebar.header("Data Input")
-uploaded_file = st.sidebar.file_uploader("Upload stock data CSV", type=["csv"])
-
-# Sample data option
-use_sample_data = st.sidebar.checkbox("Use sample data", value=False)
 
 # Model selection
 st.sidebar.header("Model Selection")
@@ -1290,289 +948,199 @@ model_option = st.sidebar.selectbox(
     index=0
 )
 
-# Define default models - will be initialized only when needed
-default_models = {
-    "Random Forest": None,
-    "Linear Regression": None,
-    "Ensemble": None
-}
-
-def load_or_create_model(model_name):
-    """Load or create a model based on selection."""
-    if default_models[model_name] is not None:
-        return default_models[model_name]
-    
-    if model_name == "Random Forest":
-        model = StockPriceModel(model_type='random_forest', 
-                              model_params={'n_estimators': 100, 'max_depth': 10, 'random_state': 42})
-        default_models[model_name] = model
-    elif model_name == "Linear Regression":
-        model = StockPriceModel(model_type='linear')
-        default_models[model_name] = model
-    elif model_name == "Ensemble":
-        rf_model = StockPriceModel(model_type='random_forest', 
-                                 model_params={'n_estimators': 100, 'max_depth': 10, 'random_state': 42})
-        linear_model = StockPriceModel(model_type='linear')
-        model = StockPriceModelEnsemble([rf_model, linear_model])
-        default_models[model_name] = model
-    
-    return default_models[model_name]
-
-# Load sample data if requested
+# Cache data loading
 @st.cache_data
-def load_sample_data():
-    """Load sample stock data for demonstration."""
-    # Create sample data with a few stocks and dates
-    dates = pd.date_range(start='2020-01-01', end='2020-12-31', freq='M')
-    tickers = ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'FB']
-    
-    data_rows = []
-    
-    for ticker in tickers:
-        # Generate realistic price series
-        base_price = np.random.uniform(50, 500)
-        for i, date in enumerate(dates):
-            price = base_price * (1 + 0.05 * np.sin(i/3) + np.random.normal(0, 0.03))
-            volume = int(np.random.uniform(1000000, 10000000))
-            ret = np.random.normal(0.01, 0.05)
-            
-            # Create a row
-            data_rows.append({
-                'PERMNO': hash(ticker) % 10000,  # Create a stable PERMNO from ticker
-                'date': date,
-                'TICKER': ticker,
-                'PRC': price,
-                'VOL': volume,
-                'RET': ret,
-                'SHROUT': int(np.random.uniform(500000, 5000000)),
-                'SICCD': np.random.randint(1000, 9999),
-                'vwretd': np.random.normal(0.01, 0.02),
-                'sprtrn': np.random.normal(0.01, 0.02)
-            })
-    
-    # Create DataFrame
-    df = pd.DataFrame(data_rows)
-    return df
+def load_stock_data():
+    """Load and process the stock data."""
+    try:
+        # Initialize processor
+        processor = StockDataProcessor(DATA_PATH)
+        
+        # Load data
+        df = processor.load_data()
+        
+        # Clean data
+        cleaned_data = processor.clean_data(df)
+        
+        return cleaned_data
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None
+
+# Load data
+with st.spinner("Loading stock data..."):
+    data = load_stock_data()
+
+# Process data and train models (cached)
+@st.cache_resource
+def process_and_train_models(data):
+    """Process data and train prediction models."""
+    try:
+        # Create feature engineer
+        engineer = StockFeatureEngineer()
+        
+        # Generate features
+        with_tech = engineer.create_technical_indicators(data)
+        with_market = engineer.create_market_features(with_tech)
+        with_fundamental = engineer.create_fundamental_features(with_market)
+        
+        # Process data for modeling
+        processor = StockDataProcessor()
+        X, y = processor.prepare_features_targets(with_fundamental, prediction_window=PREDICTION_HORIZON)
+        X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(X, y)
+        
+        # Scale features
+        X_train_scaled, X_val_scaled, X_test_scaled = engineer.scale_features(X_train, X_val, X_test)
+        
+        # Train models
+        rf_model = StockPriceModel(model_type='random_forest', 
+                                  model_params={'n_estimators': 100, 'max_depth': 10, 'random_state': 42})
+        rf_model.train(X_train_scaled, y_train)
+        
+        linear_model = StockPriceModel(model_type='linear')
+        linear_model.train(X_train_scaled, y_train)
+        
+        ensemble = StockPriceModelEnsemble([
+            StockPriceModel(model_type='random_forest', 
+                          model_params={'n_estimators': 100, 'max_depth': 10, 'random_state': 42}),
+            StockPriceModel(model_type='linear')
+        ])
+        ensemble.train(X_train_scaled, y_train)
+        
+        # Return processed data and models
+        return {
+            'processed_data': with_fundamental,
+            'feature_engineer': engineer,
+            'models': {
+                'Random Forest': rf_model,
+                'Linear Regression': linear_model,
+                'Ensemble': ensemble
+            },
+            'X_train': X_train,
+            'X_val': X_val,
+            'X_test': X_test,
+            'y_train': y_train,
+            'y_val': y_val, 
+            'y_test': y_test,
+            'X_train_scaled': X_train_scaled,
+            'X_val_scaled': X_val_scaled,
+            'X_test_scaled': X_test_scaled
+        }
+    except Exception as e:
+        st.error(f"Error processing data and training models: {str(e)}")
+        return None
 
 # Main content
-if uploaded_file is not None or use_sample_data:
-    # Load data
-    if use_sample_data:
-        data = load_sample_data()
-        st.success("Loaded sample data for demonstration")
-    else:
-        data = pd.read_csv(uploaded_file)
-        st.success(f"Data loaded: {data.shape[0]} rows, {data.shape[1]} columns")
-    
-    # Display sample data
-    with st.expander("Preview data"):
-        st.dataframe(data.head())
-    
-    # Stock selection
-    if 'TICKER' in data.columns or 'ticker' in data.columns:
-        ticker_col = 'TICKER' if 'TICKER' in data.columns else 'ticker'
-        stock_id_col = 'PERMNO' if 'PERMNO' in data.columns else 'permno'
+if data is not None:
+    # Get unique tickers
+    if 'TICKER' in data.columns:
+        tickers = sorted(data['TICKER'].unique())
         
-        # Get unique tickers
-        unique_tickers = sorted(data[ticker_col].unique())
-        
+        # Display stock selection
         st.header("Stock Selection")
-        selected_tickers = st.multiselect(
-            "Select stocks to analyze",
-            unique_tickers,
-            max_selections=5
-        )
+        selected_ticker = st.selectbox("Select a stock to predict", tickers)
         
-        if selected_tickers:
-            st.write(f"Selected {len(selected_tickers)} stocks")
+        if selected_ticker:
+            # Process data and train models (if not already done)
+            with st.spinner("Processing data and training models..."):
+                processed_data = process_and_train_models(data)
             
-            # Load model
-            with st.spinner("Loading model..."):
-                model = load_or_create_model(model_option)
+            if processed_data:
+                # Filter data for selected ticker
+                ticker_data = processed_data['processed_data'][processed_data['processed_data']['TICKER'] == selected_ticker].copy()
                 
-            st.success(f"Loaded {model_option} model")
-            
-            # Process data for selected stocks
-            filtered_data = data[data[ticker_col].isin(selected_tickers)]
-            
-            # Convert date column to datetime if needed
-            if 'date' in filtered_data.columns and not pd.api.types.is_datetime64_any_dtype(filtered_data['date']):
-                filtered_data['date'] = pd.to_datetime(filtered_data['date'])
-            
-            # Process and prepare features
-            processor = StockDataProcessor()
-            engineer = StockFeatureEngineer()
-            
-            # Show progress
-            with st.spinner("Processing data..."):
-                processed_data = processor.clean_data(filtered_data)
+                # Sort by date
+                ticker_data = ticker_data.sort_values('date')
                 
-            with st.spinner("Creating technical indicators..."):
-                with_tech = engineer.create_technical_indicators(processed_data)
-                
-            with st.spinner("Creating market features..."):
-                with_market = engineer.create_market_features(with_tech)
-                
-            with st.spinner("Creating fundamental features..."):
-                with_fundamental = engineer.create_fundamental_features(with_market)
-            
-            # Prepare features
-            date_col = 'date' if 'date' in with_fundamental.columns else None
-            
-            if date_col:
-                # Sort data by date
-                with_fundamental = with_fundamental.sort_values([stock_id_col, date_col])
-                
-                # Keep the most recent data for each stock for prediction
-                most_recent = with_fundamental.groupby(stock_id_col).tail(13)  # Last 13 months for each stock
-                
-                # Separate data for visualization
-                viz_data = most_recent.copy()
+                # Get the most recent data point
+                recent_data = ticker_data.iloc[-1:]
                 
                 # Prepare features for prediction
-                X, y = processor.prepare_features_targets(most_recent, prediction_window=1)
+                processor = StockDataProcessor()
+                X_recent, _ = processor.prepare_features_targets(recent_data, prediction_window=PREDICTION_HORIZON)
                 
-                # Get the most recent data point for each stock
-                most_recent_indices = most_recent.groupby(stock_id_col)[date_col].idxmax()
-                prediction_data = most_recent.loc[most_recent_indices]
+                # Scale features
+                X_recent_scaled = processed_data['feature_engineer'].scale_features(X_recent)[0]
                 
-                # Prepare features for the most recent data points
-                X_recent, _ = processor.prepare_features_targets(prediction_data, prediction_window=1)
+                # Get selected model
+                model = processed_data['models'][model_option]
                 
-                # Handle the case where we need to train the model
-                if isinstance(model, StockPriceModel) and model.model is None:
-                    with st.spinner("Training model on your data..."):
-                        # Create train/val split
-                        X_train, X_val, y_train, y_val = X[:-len(prediction_data)], X[-len(prediction_data):], y[:-len(prediction_data)], y[-len(prediction_data):]
-                        
-                        # Scale features
-                        X_train_scaled, X_val_scaled = engineer.scale_features(X_train, X_val)
-                        
-                        # Train model
-                        model.train(X_train_scaled, y_train)
-                        
-                        # Evaluate
-                        metrics = model.evaluate(X_val_scaled, y_val)
-                        st.info(f"Model trained with validation RMSE: {metrics['rmse']:.2f}")
-                elif isinstance(model, StockPriceModelEnsemble):
-                    # Train ensemble models if needed
-                    models_to_train = [m for m in model.models if m.model is None]
-                    if models_to_train:
-                        with st.spinner("Training ensemble models on your data..."):
-                            # Create train/val split
-                            X_train, X_val, y_train, y_val = X[:-len(prediction_data)], X[-len(prediction_data):], y[:-len(prediction_data)], y[-len(prediction_data):]
-                            
-                            # Scale features
-                            X_train_scaled, X_val_scaled = engineer.scale_features(X_train, X_val)
-                            
-                            # Train each model
-                            for m in models_to_train:
-                                m.train(X_train_scaled, y_train)
-                            
-                            # Evaluate ensemble
-                            metrics = model.evaluate(X_val_scaled, y_val)
-                            st.info(f"Ensemble trained with validation RMSE: {metrics['rmse']:.2f}")
+                # Make prediction
+                if isinstance(model, StockPriceModelEnsemble):
+                    prediction = model.predict(X_recent_scaled, method='mean')[0]
+                else:
+                    prediction = model.predict(X_recent_scaled)[0]
                 
-                # Scale the recent data for prediction
-                X_recent_scaled = engineer.scale_features(X_recent)[0]
+                # Get current price
+                current_price = recent_data['PRC'].values[0]
                 
-                # Make predictions
-                with st.spinner("Making predictions..."):
-                    if isinstance(model, StockPriceModelEnsemble):
-                        predictions = model.predict(X_recent_scaled, method='mean')
-                    else:
-                        predictions = model.predict(X_recent_scaled)
+                # Calculate predicted change
+                change_pct = (prediction / current_price - 1) * 100
                 
-                # Create results DataFrame
-                results = pd.DataFrame({
-                    'Stock': prediction_data[ticker_col].values,
-                    'Current Price': prediction_data['PRC'].values,
-                    'Predicted Price (1 Month)': predictions,
-                    'Predicted Change (%)': (predictions / prediction_data['PRC'].values - 1) * 100
-                })
+                # Display results
+                st.header("Price Prediction for End of 2025")
                 
-                # Display predictions
-                st.header("Price Predictions")
+                col1, col2, col3 = st.columns(3)
                 
-                # Format the results for display
-                formatted_results = results.copy()
-                formatted_results['Current Price'] = formatted_results['Current Price'].map('${:.2f}'.format)
-                formatted_results['Predicted Price (1 Month)'] = formatted_results['Predicted Price (1 Month)'].map('${:.2f}'.format)
-                formatted_results['Predicted Change (%)'] = formatted_results['Predicted Change (%)'].map('{:.2f}%'.format)
+                with col1:
+                    st.metric("Current Price", f"${current_price:.2f}")
                 
-                st.dataframe(formatted_results)
+                with col2:
+                    st.metric("Predicted Price (End of 2025)", f"${prediction:.2f}")
                 
-                # Create visualization
-                st.header("Visualization")
+                with col3:
+                    st.metric("Predicted Change", f"{change_pct:.2f}%", 
+                             delta=f"{change_pct:.2f}%", 
+                             delta_color="normal")
+                
+                # Plot price history and prediction
+                st.header("Price History and Prediction")
                 
                 # Prepare data for plotting
-                plot_data = []
+                dates = ticker_data['date'].tolist()
+                prices = ticker_data['PRC'].tolist()
                 
-                for ticker in selected_tickers:
-                    stock_data = viz_data[viz_data[ticker_col] == ticker].sort_values(date_col)
-                    
-                    if len(stock_data) > 0:
-                        # Get prices and dates
-                        dates = stock_data[date_col].tolist()
-                        prices = stock_data['PRC'].tolist()
-                        
-                        # Get prediction for this stock
-                        stock_pred = results[results['Stock'] == ticker]
-                        
-                        if len(stock_pred) > 0:
-                            pred_price = stock_pred['Predicted Price (1 Month)'].values[0]
-                            last_date = dates[-1]
-                            
-                            # Add prediction point (1 month in the future)
-                            if isinstance(last_date, pd.Timestamp):
-                                # Add approximately one month
-                                pred_date = last_date + pd.DateOffset(months=1)
-                            else:
-                                # Handle non-datetime date format
-                                pred_date = last_date + 30  # Approximate 1 month
-                            
-                            # Add to plot data
-                            plot_data.append({
-                                'ticker': ticker,
-                                'dates': dates + [pred_date],
-                                'prices': prices + [pred_price],
-                                'prediction_index': len(dates)
-                            })
+                # Add prediction point
+                last_date = dates[-1]
+                # Add approximately one year
+                pred_date = last_date + pd.DateOffset(months=12)
                 
                 # Create interactive plot
                 fig = go.Figure()
                 
-                # Color palette
-                colors = px.colors.qualitative.Plotly
+                # Add historical prices
+                fig.add_trace(go.Scatter(
+                    x=dates,
+                    y=prices,
+                    mode='lines+markers',
+                    name='Historical Price',
+                    line=dict(color='blue')
+                ))
                 
-                for i, stock in enumerate(plot_data):
-                    color = colors[i % len(colors)]
-                    
-                    # Add historical prices
-                    fig.add_trace(go.Scatter(
-                        x=stock['dates'][:stock['prediction_index']],
-                        y=stock['prices'][:stock['prediction_index']],
-                        mode='lines+markers',
-                        name=f"{stock['ticker']} (Historical)",
-                        line=dict(color=color)
-                    ))
-                    
-                    # Add prediction
-                    fig.add_trace(go.Scatter(
-                        x=stock['dates'][stock['prediction_index']-1:],
-                        y=stock['prices'][stock['prediction_index']-1:],
-                        mode='lines+markers',
-                        line=dict(color=color, dash='dash'),
-                        marker=dict(size=[8, 12], symbol=['circle', 'star']),
-                        name=f"{stock['ticker']} (Prediction)"
-                    ))
+                # Add prediction line
+                fig.add_trace(go.Scatter(
+                    x=[last_date, pred_date],
+                    y=[current_price, prediction],
+                    mode='lines',
+                    line=dict(color='red', dash='dash'),
+                    name='Prediction'
+                ))
+                
+                # Add prediction point
+                fig.add_trace(go.Scatter(
+                    x=[pred_date],
+                    y=[prediction],
+                    mode='markers',
+                    marker=dict(size=12, color='red', symbol='star'),
+                    name='End of 2025 Prediction'
+                ))
                 
                 fig.update_layout(
-                    title="Stock Price Prediction (1 Month)",
+                    title=f"{selected_ticker} Stock Price Prediction",
                     xaxis_title="Date",
                     yaxis_title="Price ($)",
-                    legend_title="Stocks",
-                    height=600
+                    legend_title="Legend",
+                    height=500
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
@@ -1580,17 +1148,13 @@ if uploaded_file is not None or use_sample_data:
                 # Model information
                 st.header("Model Information")
                 
-                if isinstance(model, StockPriceModelEnsemble):
-                    st.write(f"Using Ensemble of {len(model.models)} models")
-                    
-                    # List models in ensemble
-                    model_names = [m.model_type.capitalize() for m in model.models]
-                    st.write(f"Models in ensemble: {', '.join(model_names)}")
+                if model_option == "Ensemble":
+                    st.write("Using an ensemble of Random Forest and Linear Regression models")
                 else:
-                    st.write(f"Using {model_option} model")
+                    st.write(f"Using a {model_option} model")
                     
-                    # Show feature importance if available and model is trained
-                    if model.model is not None and hasattr(model, 'plot_feature_importance'):
+                    # Show feature importance if available
+                    if model_option == "Random Forest":
                         st.subheader("Feature Importance")
                         
                         try:
@@ -1599,52 +1163,38 @@ if uploaded_file is not None or use_sample_data:
                                 st.pyplot(fig)
                         except Exception as e:
                             st.warning(f"Could not plot feature importance: {str(e)}")
-            
-            else:
-                st.error("Date column not found in data")
-            
+                
+                # Performance metrics
+                st.header("Model Performance")
+                
+                # Calculate metrics on validation set
+                if isinstance(model, StockPriceModelEnsemble):
+                    metrics = model.evaluate(processed_data['X_val_scaled'], processed_data['y_val'])
+                else:
+                    metrics = model.evaluate(processed_data['X_val_scaled'], processed_data['y_val'])
+                
+                # Display metrics
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("RMSE", f"${metrics['rmse']:.2f}")
+                
+                with col2:
+                    st.metric("MAE", f"${metrics['mae']:.2f}")
+                
+                with col3:
+                    st.metric("R²", f"{metrics['r2']:.2f}")
+                
+                with col4:
+                    st.metric("MAPE", f"{metrics['mape']:.2f}%")
         else:
-            st.info("Please select at least one stock to analyze")
-    
+            st.info("Please select a stock to predict")
     else:
-        st.error("Ticker column not found in data. Please ensure your data includes a 'TICKER' or 'ticker' column.")
-
+        st.error("Ticker column not found in data")
 else:
-    st.info("Please upload stock data or use the sample data to begin analysis.")
-    
-    # Information about expected data format
-    st.header("Expected Data Format")
-    st.write("The uploaded CSV should contain stock data with the following columns:")
-    
-    example_data = pd.DataFrame({
-        'PERMNO': [10026, 10026, 10026],
-        'date': ['2020-01-31', '2020-02-28', '2020-03-31'],
-        'TICKER': ['JJSF', 'JJSF', 'JJSF'],
-        'PRC': [165.84, 160.82, 121.00],
-        'VOL': [22433, 18648, 39302],
-        'RET': [-0.10002, -0.03027, -0.24403]
-    })
-    
-    st.dataframe(example_data)
-    
-    st.markdown("""
-    ### Key Columns:
-    - **PERMNO**: Stock identifier
-    - **date**: Date of observation
-    - **TICKER**: Stock ticker symbol
-    - **PRC**: Stock price
-    - **VOL**: Trading volume
-    - **RET**: Returns
-    
-    The app will automatically generate technical indicators and other features for prediction.
-    """)
-    
-    # Sample data button
-    if st.button("Use Sample Data"):
-        st.session_state.use_sample_data = True
-        st.experimental_rerun()
+    st.error("Failed to load stock data. Please check the data path and format.")
 
 # Footer
 st.markdown("---")
-st.markdown("**1-Month Stock Price Predictor** | FDA_1mo_Stock_Prediction")
+st.markdown("**Stock Price Predictor for End of 2025** | FDA_1mo_Stock_Prediction")
 st.markdown("Created with Streamlit and Machine Learning")
