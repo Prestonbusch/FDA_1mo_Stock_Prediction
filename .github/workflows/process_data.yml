@@ -28,7 +28,7 @@ jobs:
         
     - name: Run data processing script
       run: |
-        python clean_data.py
+        python data/processed/clean_data.py
         
     - name: Commit processed data
       run: |
