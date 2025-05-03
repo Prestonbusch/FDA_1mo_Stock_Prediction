@@ -129,4 +129,92 @@ if __name__ == "__main__":
     
     # Load data
     logger.info(f"Loading data from {args.data}")
-    data =
+    data =if __name__ == "__main__":
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Create output directory
+    os.makedirs(args.output, exist_ok=True)
+    
+    # Load data
+    logger.info(f"Loading data from {args.data}")
+    data = pd.read_csv(args.data)
+    
+    # Process and prepare features
+    from src.data_processing import StockDataProcessor
+    from src.feature_engineering import StockFeatureEngineer
+    
+    processor = StockDataProcessor()
+    engineer = StockFeatureEngineer()
+    
+    # Feature engineering
+    processed_data = processor.clean_data(data)
+    with_tech = engineer.create_technical_indicators(processed_data)
+    with_market = engineer.create_market_features(with_tech)
+    with_fundamental = engineer.create_fundamental_features(with_market)
+    
+    # Prepare features and split data
+    X, y = processor.prepare_features_targets(with_fundamental, prediction_window=1)
+    X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(X, y)
+    
+    # Scale features
+    X_train_scaled, X_val_scaled, X_test_scaled = engineer.scale_features(X_train, X_val, X_test)
+    
+    # Load model
+    logger.info(f"Loading model from {args.model}")
+    if 'ensemble' in args.model.lower():
+        model = StockPriceModelEnsemble.load_ensemble(args.model)
+        model_name = "Ensemble Model"
+    else:
+        model = StockPriceModel.load_model(args.model)
+        model_name = f"{model.model_type.capitalize()} Model"
+    
+    # Evaluate model on validation set
+    logger.info("Evaluating model on validation set")
+    val_metrics = evaluate_model(model, X_val_scaled, y_val, f"{model_name} (Validation)")
+    
+    # Evaluate model on test set
+    logger.info("Evaluating model on test set")
+    test_metrics = evaluate_model(model, X_test_scaled, y_test, f"{model_name} (Test)")
+    
+    # Plot predictions
+    if isinstance(model, StockPriceModel):
+        y_pred_test = model.predict(X_test_scaled)
+    else:
+        y_pred_test = model.predict(X_test_scaled, method='mean')
+        
+    plot_path = os.path.join(args.output, f"{model_name.lower().replace(' ', '_')}_predictions.png")
+    plot_predictions(y_test, y_pred_test, model_name, plot_path)
+    
+    # Save metrics to CSV
+    metrics_df = pd.DataFrame({
+        'Metric': ['RMSE', 'MAE', 'R2', 'MAPE', 'Direction Accuracy'],
+        'Validation': [val_metrics['rmse'], val_metrics['mae'], val_metrics['r2'], 
+                      val_metrics['mape'], val_metrics['direction_accuracy']],
+        'Test': [test_metrics['rmse'], test_metrics['mae'], test_metrics['r2'], 
+                test_metrics['mape'], test_metrics['direction_accuracy']]
+    })
+    
+    metrics_path = os.path.join(args.output, f"{model_name.lower().replace(' ', '_')}_metrics.csv")
+    metrics_df.to_csv(metrics_path, index=False)
+    
+    # If model is tree-based, plot feature importance
+    if hasattr(model, 'plot_feature_importance'):
+        try:
+            fig = model.plot_feature_importance(top_n=20)
+            if fig:
+                importance_path = os.path.join(args.output, f"{model_name.lower().replace(' ', '_')}_feature_importance.png")
+                fig.savefig(importance_path, dpi=300, bbox_inches='tight')
+                logger.info(f"Feature importance saved to {importance_path}")
+        except Exception as e:
+            logger.warning(f"Could not plot feature importance: {str(e)}")
+    
+    # Print summary
+    print("\nEvaluation Summary:")
+    print(f"Model: {model_name}")
+    print(f"Data: {args.data}")
+    print(f"Test samples: {len(X_test)}")
+    print(f"RMSE (Test): {test_metrics['rmse']:.4f}")
+    print(f"R² (Test): {test_metrics['r2']:.4f}")
+    print(f"Direction Accuracy (Test): {test_metrics['direction_accuracy']:.2f}%")
+    print(f"Reports saved to: {args.output}")
