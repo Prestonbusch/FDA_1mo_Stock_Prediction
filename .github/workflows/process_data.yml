@@ -1,0 +1,39 @@
+name: Process Data
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual triggering
+
+jobs:
+  process-data:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy py7zr matplotlib seaborn scikit-learn
+        
+    - name: Create directories
+      run: |
+        mkdir -p data/processed
+        
+    - name: Run data processing script
+      run: |
+        python clean_data.py
+        
+    - name: Commit processed data
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add data/processed/cleaned_stock_data.csv
+        git commit -m "Add processed data" || echo "No changes to commit"
+        git push
