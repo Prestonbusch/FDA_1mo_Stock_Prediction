@@ -3,14 +3,17 @@ name: Process Data
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # Allows manual triggering
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   process-data:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    # Rest of your workflow...
       
     - name: Set up Python
       uses: actions/setup-python@v4
