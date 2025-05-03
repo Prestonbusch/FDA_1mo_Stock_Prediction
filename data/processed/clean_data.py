@@ -47,12 +47,16 @@ def clean_data(file_path):
     """Clean the stock data."""
     logger.info(f"Loading data from {file_path}")
     
-    # Load the CSV file
-    df = pd.read_csv(file_path)
+    # Load the CSV file with low_memory=False to handle mixed types
+    df = pd.read_csv(file_path, low_memory=False)
     
     # Convert date column to datetime
     if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'])
+        try:
+            df['date'] = pd.to_datetime(df['date'])
+            logger.info("Converted date column to datetime")
+        except Exception as e:
+            logger.warning(f"Could not convert date column: {str(e)}")
     
     # Ensure ticker column is uppercase
     if 'TICKER' in df.columns:
@@ -63,16 +67,33 @@ def clean_data(file_path):
     # Remove rows with missing prices
     if 'PRC' in df.columns:
         df = df.dropna(subset=['PRC'])
+        logger.info(f"Removed rows with missing prices: {df.shape[0]} rows remaining")
     
     # Handle missing returns data
     if 'RET' in df.columns:
-        df['RET'] = df['RET'].fillna(0)
+        try:
+            # Convert to numeric first to ensure proper handling
+            df['RET'] = pd.to_numeric(df['RET'], errors='coerce')
+            df['RET'] = df['RET'].fillna(0)
+            logger.info("Filled missing RET values with 0")
+        except Exception as e:
+            logger.warning(f"Error handling RET column: {str(e)}")
     
-    # Handle infinite values
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    # Handle infinite values for numeric columns
+    numeric_cols = []
+    for col in df.columns:
+        try:
+            # Try to convert to numeric, coercing errors to NaN
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            numeric_cols.append(col)
+        except:
+            logger.info(f"Column {col} is not numeric or has mixed types")
+    
+    # Handle infinite values in numeric columns
     df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
+    logger.info(f"Handled infinite values in {len(numeric_cols)} numeric columns")
     
-    # Fill remaining NaN values
+    # Fill remaining NaN values in numeric columns
     for col in numeric_cols:
         if col in ['VOL', 'SHROUT', 'MMCNT']:
             df[col] = df[col].fillna(0)
@@ -81,12 +102,16 @@ def clean_data(file_path):
         else:
             df[col] = df[col].fillna(df[col].median())
     
-    # Remove extreme outliers
+    # Remove extreme outliers for specific columns
     for col in ['PRC', 'VOL', 'RET']:
-        if col in df.columns:
-            mean, std = df[col].mean(), df[col].std()
-            lower_bound, upper_bound = mean - 3 * std, mean + 3 * std
-            df[col] = df[col].clip(lower_bound, upper_bound)
+        if col in df.columns and col in numeric_cols:
+            try:
+                mean, std = df[col].mean(), df[col].std()
+                lower_bound, upper_bound = mean - 3 * std, mean + 3 * std
+                df[col] = df[col].clip(lower_bound, upper_bound)
+                logger.info(f"Removed outliers in {col} column")
+            except Exception as e:
+                logger.warning(f"Could not handle outliers for {col}: {str(e)}")
     
     logger.info(f"Data cleaning complete: {df.shape[0]} rows")
     
@@ -94,18 +119,22 @@ def clean_data(file_path):
 
 def main():
     """Run the data cleaning process."""
-    # Create output directory if it doesn't exist
-    os.makedirs(os.path.dirname(CLEANED_DATA_PATH), exist_ok=True)
-    
-    # Extract the 7z archive
-    extracted_file = extract_7z(RAW_DATA_PATH, EXTRACTED_DIR)
-    
-    # Clean the data
-    cleaned_data = clean_data(extracted_file)
-    
-    # Save the cleaned data
-    cleaned_data.to_csv(CLEANED_DATA_PATH, index=False)
-    logger.info(f"Cleaned data saved to {CLEANED_DATA_PATH}")
+    try:
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(CLEANED_DATA_PATH), exist_ok=True)
+        
+        # Extract the 7z archive
+        extracted_file = extract_7z(RAW_DATA_PATH, EXTRACTED_DIR)
+        
+        # Clean the data
+        cleaned_data = clean_data(extracted_file)
+        
+        # Save the cleaned data
+        cleaned_data.to_csv(CLEANED_DATA_PATH, index=False)
+        logger.info(f"Cleaned data saved to {CLEANED_DATA_PATH}")
+    except Exception as e:
+        logger.error(f"Error in data cleaning process: {str(e)}")
+        raise
 
 if __name__ == "__main__":
     main()
